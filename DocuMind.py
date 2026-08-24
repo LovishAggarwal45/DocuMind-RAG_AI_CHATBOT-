@@ -1,3 +1,4 @@
+import uuid
 from dotenv import load_dotenv
 from langchain_mistralai import ChatMistralAI, MistralAIEmbeddings
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
@@ -32,11 +33,6 @@ if INDEX_NAME not in existing_indexes:
 
 pinecone_index = pc.Index(INDEX_NAME)
 
-vectorstore = PineconeVectorStore(
-    index=pinecone_index,
-    embedding=embedding_model
-)
-
 def doc_loader(filename):
     if filename.endswith(".pdf"):
         loader=PyPDFLoader(filename)
@@ -54,6 +50,11 @@ splitter=RecursiveCharacterTextSplitter(
 )
 
 def ingest_documents(files, user_id=None):
+    if not user_id:
+        raise ValueError("Session ID is required.")
+
+    namespace = f"session_{user_id}"
+
     all_docs = []
     temp_paths_to_cleanup = []
 
@@ -62,30 +63,35 @@ def ingest_documents(files, user_id=None):
             path = file
         else:
             suffix = os.path.splitext(file.filename)[1]
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=suffix
+            ) as tmp:
                 tmp.write(file.file.read())
                 path = tmp.name
+
             temp_paths_to_cleanup.append(path)
 
         all_docs.extend(doc_loader(path))
 
     for path in temp_paths_to_cleanup:
-        os.remove(path)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
     chunks = splitter.split_documents(all_docs)
-    vectorstore.add_documents(chunks)  
-    if user_id:
-        document_sessions.add(user_id)
-    return len(chunks)
 
-retriever = vectorstore.as_retriever(
-    search_type = "mmr",
-    search_kwargs = {
-        "k" : 4,
-        "fetch_k":10,
-        "lambda_mult" :0.5
-    }
-)
+    user_vectorstore = PineconeVectorStore(
+        index=pinecone_index,
+        embedding=embedding_model,
+        namespace=namespace
+    )
+
+    user_vectorstore.add_documents(chunks)
+
+    return len(chunks)
 
 prompt = ChatPromptTemplate.from_messages(
     [
@@ -136,17 +142,46 @@ prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-document_sessions = set()
 messages={}
 parser=StrOutputParser()
 
 def ask_documind(query, user_id="default"):
 
+    if not user_id:
+        raise ValueError("Session ID is required.")
+
     if user_id not in messages:
         messages[user_id] = []
 
     user_messages = messages[user_id]
-    has_documents = user_id in document_sessions
+
+    namespace = f"session_{user_id}"
+
+    user_vectorstore = PineconeVectorStore(
+        index=pinecone_index,
+        embedding=embedding_model,
+        namespace=namespace
+    )
+
+    retriever = user_vectorstore.as_retriever(
+        search_type="mmr",
+        search_kwargs={
+            "k": 4,
+            "fetch_k": 10,
+            "lambda_mult": 0.5
+        }
+    )
+
+    try:
+        stats = pinecone_index.describe_index_stats(
+            filter=None
+        )
+
+        namespace_stats = stats.get("namespaces", {}).get(namespace, {})
+        has_documents = namespace_stats.get("vector_count", 0) > 0
+
+    except Exception:
+        has_documents = False
 
     if has_documents:
 
