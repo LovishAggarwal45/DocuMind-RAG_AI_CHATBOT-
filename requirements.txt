@@ -7,8 +7,9 @@ langchain-core==0.3.58
 langchain-community==0.3.24
 langchain-mistralai==0.2.10
 langchain-text-splitters==0.3.8
+langchain-pinecone==0.2.8
+pinecone==6.0.2
 pypdf==5.4.0
-faiss-cpu==1.10.0
 sentence-transformers==4.1.0
 numpy==2.2.5
 streamlit==1.61.0
