@@ -1,8 +1,15 @@
+import time
 import requests
 import streamlit as st
 
 API_BASE_URL = "https://documind-rag-ai-chatbot.onrender.com"
 ALLOWED_TYPES = ["pdf", "docx", "txt"]
+
+SESSION_TIMEOUT = 60
+UPLOAD_TIMEOUT = 600
+ASK_TIMEOUT = 180
+COLD_START_RETRIES = 3
+COLD_START_BACKOFF = 5  # seconds, multiplied by attempt number
 
 st.set_page_config(
     page_title="DocuMind | AI Document Assistant",
@@ -19,8 +26,24 @@ html, body, [class*="css"] {
     font-family: 'Inter', sans-serif;
 }
 
-#MainMenu, footer, header {
+/* Hide only the hamburger menu and footer. Deliberately NOT hiding
+   the header/toolbar container itself (visibility:hidden on it, or on
+   any element that wraps it, also hides the arrow button used to
+   re-expand the sidebar once it's collapsed — that button lives in
+   that same region and there's no separate reliable selector for it
+   across Streamlit versions). Making the header transparent instead
+   keeps it invisible-looking while leaving the toggle clickable. */
+#MainMenu {
     visibility: hidden;
+}
+
+footer {
+    visibility: hidden;
+}
+
+header[data-testid="stHeader"] {
+    background: transparent;
+    box-shadow: none;
 }
 
 .block-container {
@@ -36,6 +59,8 @@ html, body, [class*="css"] {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 2.2rem;
+    flex-wrap: wrap;
+    gap: 0.4rem;
 }
 
 .brand {
@@ -108,6 +133,7 @@ section[data-testid="stSidebar"] .stButton button:hover {
     margin-bottom: 0.4rem;
     font-size: 0.85rem;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+    word-break: break-word;
 }
 
 
@@ -145,6 +171,50 @@ section[data-testid="stSidebar"] .stButton button:hover {
 .documind-footer strong {
     color: #475569;
 }
+
+
+/* ---------- Responsive ---------- */
+
+@media (max-width: 768px) {
+
+    .block-container {
+        padding-left: 1rem;
+        padding-right: 1rem;
+        padding-top: 1rem;
+    }
+
+    .topbar {
+        flex-direction: column;
+        align-items: flex-start;
+        margin-bottom: 1.2rem;
+    }
+
+    .brand {
+        font-size: 2.6rem;
+    }
+
+    .creator {
+        padding-top: 0;
+    }
+
+    .subtitle {
+        margin-top: 0.4rem;
+        margin-bottom: 1.4rem;
+        font-size: 0.9rem;
+    }
+
+    .empty-state {
+        padding: 2.5rem 0.5rem;
+    }
+}
+
+@media (max-width: 420px) {
+
+    .brand {
+        font-size: 2.1rem;
+        letter-spacing: 0.1em;
+    }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -159,26 +229,61 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+
+def fetch_new_session():
+    """Hit /new-session, retrying with backoff to ride out a cold start."""
+
+    last_error = None
+
+    for attempt in range(1, COLD_START_RETRIES + 1):
+
+        try:
+            res = requests.get(
+                f"{API_BASE_URL}/new-session",
+                timeout=SESSION_TIMEOUT
+            )
+            res.raise_for_status()
+            return res.json()["user_id"], None
+
+        except Exception as e:
+            last_error = e
+            if attempt < COLD_START_RETRIES:
+                time.sleep(COLD_START_BACKOFF * attempt)
+    return None, last_error
+
+
 if "user_id" not in st.session_state:
 
-    try:
-        res = requests.get(
-            f"{API_BASE_URL}/new-session",
-            timeout=10
-        )
+    with st.spinner("Connecting to DocuMind (this can take a moment if the backend was asleep)..."):
+        st.session_state.user_id, session_error = fetch_new_session()
 
-        st.session_state.user_id = res.json()["user_id"]
-
-    except Exception:
-        st.session_state.user_id = None
+    if st.session_state.user_id is None:
+        st.session_state.session_error = str(session_error)
 
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-
 if "uploaded_files_list" not in st.session_state:
     st.session_state.uploaded_files_list = []
+
+
+if not st.session_state.user_id:
+
+    st.warning(
+        "⚠️ Couldn't connect to the DocuMind backend. It may still be waking up "
+        "from sleep — this can take up to a minute on the first request."
+    )
+
+    if st.button("🔄 Retry connection"):
+
+        with st.spinner("Retrying..."):
+            st.session_state.user_id, session_error = fetch_new_session()
+
+        if st.session_state.user_id:
+            st.rerun()
+        else:
+            st.session_state.session_error = str(session_error)
 
 
 with st.sidebar:
@@ -199,11 +304,12 @@ with st.sidebar:
     if st.button(
         "📤 Upload & Process",
         use_container_width=True,
-        disabled=not uploaded_files
+        disabled=not uploaded_files or not st.session_state.user_id
     ):
 
         with st.spinner(
-            "Reading, chunking, and embedding your documents..."
+            "Reading, chunking, and embedding your documents... "
+            "(first request after idle time may take a bit longer)"
         ):
             try:
                 files_payload = [
@@ -222,7 +328,7 @@ with st.sidebar:
                     f"{API_BASE_URL}/upload",
                     data=data,
                     files=files_payload,
-                    timeout=300
+                    timeout=UPLOAD_TIMEOUT
                 )
 
                 if res.status_code == 200:
@@ -242,6 +348,13 @@ with st.sidebar:
                     st.error(
                         f"❌ {res.json().get('detail', 'Upload failed.')}"
                     )
+
+            except requests.exceptions.Timeout:
+
+                st.error(
+                    "⏳ The upload timed out. The backend may still be waking up "
+                    "from sleep — please try again in a few seconds."
+                )
 
             except Exception as e:
 
@@ -324,6 +437,14 @@ query = st.chat_input(
 
 if query:
 
+    # If we never got a session (e.g. backend was cold on first load),
+    # try once more before sending the question so it doesn't fail with
+    # a null session_id.
+    if not st.session_state.user_id:
+
+        with st.spinner("Reconnecting to backend..."):
+            st.session_state.user_id, _ = fetch_new_session()
+
     st.session_state.chat_history.append(
         {
             "role": "user",
@@ -346,34 +467,62 @@ if query:
 
         with st.spinner("Thinking..."):
 
-            try:
-
-                res = requests.post(
-                    f"{API_BASE_URL}/ask",
-                    json={
-                        "session_id": st.session_state.user_id,
-                        "question": query
-                    },
-                    timeout=120
-            )
-
-                if res.status_code == 200:
-
-                    answer = res.json()["answer"]
-
-                else:
-
-                    answer = (
-                        f"⚠️ Error: "
-                        f"{res.json().get('detail', 'Something went wrong.')}"
-                    )
-
-            except Exception as e:
+            if not st.session_state.user_id:
 
                 answer = (
-                    f"⚠️ Could not reach backend: {e}"
+                    "⚠️ Still can't reach the backend — it may be waking up "
+                    "from sleep. Please wait a few seconds and try again."
                 )
 
+            else:
+
+                answer = None
+
+                for attempt in range(1, COLD_START_RETRIES + 1):
+
+                    try:
+
+                        res = requests.post(
+                            f"{API_BASE_URL}/ask",
+                            json={
+                                "session_id": st.session_state.user_id,
+                                "question": query
+                            },
+                            timeout=ASK_TIMEOUT
+                        )
+
+                        if res.status_code == 200:
+
+                            answer = res.json()["answer"]
+
+                        else:
+
+                            answer = (
+                                f"⚠️ Error: "
+                                f"{res.json().get('detail', 'Something went wrong.')}"
+                            )
+
+                        break
+
+                    except requests.exceptions.Timeout:
+
+                        if attempt < COLD_START_RETRIES:
+                            time.sleep(COLD_START_BACKOFF * attempt)
+                            continue
+
+                        answer = (
+                            "⏳ The backend is taking longer than expected to "
+                            "respond (it may still be waking up from sleep). "
+                            "Please try sending your question again."
+                        )
+
+                    except Exception as e:
+
+                        answer = (
+                            f"⚠️ Could not reach backend: {e}"
+                        )
+
+                        break
 
             st.markdown(answer)
 
