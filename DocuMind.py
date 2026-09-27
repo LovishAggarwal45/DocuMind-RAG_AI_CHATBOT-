@@ -1,6 +1,6 @@
 import uuid
 from dotenv import load_dotenv
-from langchain_mistralai import ChatMistralAI, MistralAIEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
@@ -13,14 +13,14 @@ from langchain_pinecone import PineconeVectorStore
 
 load_dotenv()
 
-llm_model=ChatMistralAI(model="mistral-small-2603")
-embedding_model=MistralAIEmbeddings()
+llm_model = ChatGoogleGenerativeAI(model="gemini-3.7-flash",temperature=0.2)
+embedding_model = GoogleGenerativeAIEmbeddings(model="gemini-embedding-001")
 
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "documind-index")
 
-# mistral-embed produces 1024-dimensional vectors -> index must match this dimension
-EMBED_DIM = 1024
+# gemini-embed produces 1024-dimensional vectors -> index must match this dimension
+EMBED_DIM = 3072
 
 existing_indexes = [index.name for index in pc.list_indexes()]
 if INDEX_NAME not in existing_indexes:

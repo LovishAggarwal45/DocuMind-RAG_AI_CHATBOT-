@@ -95,7 +95,7 @@ The LLM uses the retrieved context to generate a relevant and contextual answer.
 ---
 
 🛠️ Tech Stack
-
+```
 Category| Technologies
 Language| Python
 GenAI| Large Language Models, RAG
@@ -105,13 +105,14 @@ Backend| FastAPI
 Frontend| Streamlit
 Document Processing| PDF, DOCX, TXT
 Deployment| Streamlit
-
+```
 ---
 
 🏗️ Architecture
 
 DocuMind is designed around a modular frontend → backend → retrieval → generation workflow.
 
+```
 ┌─────────────────────┐
 │      Streamlit      │
 │    User Interface   │
@@ -145,6 +146,7 @@ DocuMind is designed around a modular frontend → backend → retrieval → gen
 │    LLM / RAG        │
 │ Response Generation │
 └─────────────────────┘
+```
 
 ---
 
