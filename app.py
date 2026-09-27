@@ -32,14 +32,15 @@ async def upload(
         f.filename for f in files
         if not f.filename.lower().endswith(ALLOWED_EXTENSIONS)
     ]
+
     if invalid_files:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type(s): {invalid_files}. "
-                   f"Only {ALLOWED_EXTENSIONS} are allowed."
+            detail=f"Unsupported file type(s): {invalid_files}"
         )
 
     n_chunks = ingest_documents(files, user_id)
+
     return {
         "status": "success",
         "files_received": [f.filename for f in files],
